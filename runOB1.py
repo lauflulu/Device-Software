@@ -10,6 +10,8 @@
 'pip uninstall matplotlib'
 'pip install matplotlib'
 in cmd
+- import tkinter.filedialog as tkfd and use of asksaveasfilename does not work,
+if conflicting Qt4 versions exist (e.g. for MikTeX)
 
 '''
 import matplotlib
@@ -21,14 +23,18 @@ from matplotlib import style
 
 import tkinter as tk
 import numpy as np
-import scipy.signal as spsg
+import scipy.signal as spsg # for triangle and square
 import time
-from collections import deque
+from collections import deque # queues instead of lists
+import re # reg exp
+import dill # save, load objects (improved version: dill)
+import glob, os # for loading (list all files with *.pkl)
+
 #from tkinter import ttk
 #from tkinter import messagebox
 #import Elveflow32 as ork
 
-style.use('dark_background')
+style.use(['ggplot','dark_background'])
 
 
 
@@ -46,24 +52,62 @@ class MenuBar(tk.Frame):
 
         # create buttons, labels and other widgets
         self.var = tk.IntVar()
+        self.saveVar = tk.StringVar()
+        self.saveVar.set('.pkl')
         self.mainToggle = tk.Checkbutton(self.frame, text = 'OFF', bg = 'red',
                                          indicatoron=0, command = self.main_toggle_cb,
                                          variable = self.var)
-        self.title = tk.Label(self.frame, text='Custom app for Elveflow OB1 pressure controller')
+        self.title = tk.Label(self.frame, text='Control Panel')
         self.settings = tk.Button(self.frame, text = 'Settings', command = self.settings_open_cb)
         self.apply = tk.Button(self.frame, text = 'Apply', command = self.apply_cb)
+        self.save = tk.Button(self.frame, text = 'Save as ...', command = self.save_cb)
+        self.saveAs = tk.Entry(self.frame, textvariable = self.saveVar)
+        self.load = tk.Button(self.frame, text = 'Load', command = self.load_cb)
+        self.loadFrom = tk.Listbox(self.frame, height = 2)
+        self.loadScroll = tk.Scrollbar(self.frame)
         self.close = tk.Button(self.frame, text = 'close', command = self.close_cb)
         
         # buttons need to be placed by a geometry manager (pack, grid, place, ...)
         self.mainToggle.pack(side = 'left')
         self.settings.pack(side= 'left')
         self.apply.pack(side= 'left')
+        self.save.pack(side= 'left')
+        self.saveAs.pack(side= 'left')
+        self.load.pack(side= 'left')
+        self.loadFrom.pack(side= 'left')
+        self.loadScroll.pack(side= 'left')
         self.title.pack(side = 'left')
         self.close.pack(side = 'left')
         self.frame.pack()
+        self.update_loadbox()
+        # attach listbox to scrollbar
+        self.loadFrom.config(yscrollcommand=self.loadScroll.set)
+        self.loadScroll.config(command=self.loadFrom.yview)
+        
+    def update_loadbox(self):
+        self.loadFrom.delete(0, tk.END)
+        for file in glob.glob("*.pkl"):
+            self.loadFrom.insert(1, file)
         
     def apply_cb(self):
-        self.friend.apply_set_cb()
+        self.friend.apply_entries_cb()
+        
+    def save_cb(self):
+        with open(self.saveVar.get(), 'wb') as output: # with statement: file closed automatically
+            self.friend.apply_entries_cb() # ensure entry values are written in channels
+            dill.dump(channels, output, dill.HIGHEST_PROTOCOL)
+        self.update_loadbox()
+
+    
+    def load_cb(self):
+        fileindex = self.loadFrom.curselection()[0]
+        filename = self.loadFrom.get(fileindex)
+        print(filename)
+        with open(filename, 'rb') as input_:
+            global channels
+            channels = dill.load(input_)
+            self.friend.read_entries_cb()
+
         
     def main_toggle_cb(self):
         global mainToggle
@@ -114,6 +158,7 @@ class MainPanel(tk.Frame):
         self.labelAmplitude = tk.Label(self.frame, text = 'amplitude')
         self.labelPeriod = tk.Label(self.frame, text = 'period')
         self.labelPhase = tk.Label(self.frame, text = 'phase (°)')
+        self.labelCalculate = tk.Label(self.frame, text = 'calculate')
         self.labelGetPressure = tk.Label(self.frame, text = 'pressure (mbar)')
         
         self.labelChannels.grid(row=0, column = 0)
@@ -122,20 +167,23 @@ class MainPanel(tk.Frame):
         self.labelAmplitude.grid(row= 0, column = 3)
         self.labelPeriod.grid(row= 0, column = 4)
         self.labelPhase.grid(row= 0, column = 5)
-        self.labelGetPressure.grid(row=0, column = 6)
+        self.labelCalculate.grid(row= 0, column = 6)
+        self.labelGetPressure.grid(row=0, column = 7)
                 
-        # initialize variables for buttons
+        # initialize variables for entries
         self.stateVar = {}  
         self.optionsVar = {}
         self.pressureVar = {}
         self.amplitudeVar = {}
         self.periodVar = {}
         self.phaseVar = {}
+        self.calculateVar = {}
         
         self.pressureSets = []
         self.amplitudeSets = []
         self.periodSets = []
         self.phaseSets = []
+        self.calculateSets = []
         self.pressureGets = []
         
         self.colours = {'1':'orange','2':'lightgreen','3':'lightblue','0':'yellow'}
@@ -147,30 +195,19 @@ class MainPanel(tk.Frame):
 
             # assign variables, set default values
             self.stateVar[str(ch)]= tk.IntVar()
-            self.stateVar[str(ch)].set(channels[ch].state)
-            
             self.optionsVar[str(ch)] = tk.StringVar()
-            self.optionsVar[str(ch)].set(channels[ch].function) 
-            
             self.pressureVar[str(ch)] = tk.StringVar()
-            self.pressureVar[str(ch)].set(channels[ch].pressure)
-            
             self.amplitudeVar[str(ch)] = tk.StringVar()
-            self.amplitudeVar[str(ch)].set(channels[ch].amplitude)
-            
             self.periodVar[str(ch)] = tk.StringVar()
-            self.periodVar[str(ch)].set(channels[ch].period)
-            
             self.phaseVar[str(ch)] = tk.StringVar()
-            self.phaseVar[str(ch)].set(channels[ch].phase)
-            
+            self.calculateVar[str(ch)] = tk.StringVar()
+
             self.toggle = tk.Checkbutton(self.frame, text = str(ch), bg = self.colours[str(ch)],
                                         indicatoron=1, command = self.toggle_cb,
-                                        variable = self.stateVar[str(ch)])
+                                        variable = self.stateVar[str(ch)]) 
                                         
             # options menu to select the function for the channel
-            self.options = tk.OptionMenu(self.frame, self.optionsVar[str(ch)], 'const.', 'sine', 'triangle','square')
-            
+            self.options = tk.OptionMenu(self.frame, self.optionsVar[str(ch)], 'const.', 'sine', 'triangle','square','calculate')
             
             # allow only floats in entry fields
             vcmd = (root.register(self.validate),
@@ -188,6 +225,8 @@ class MainPanel(tk.Frame):
             self.phaseSet = tk.Spinbox(self.frame, textvariable = self.phaseVar[str(ch)],
                                         validate = 'key', validatecommand = vcmd,
                                         from_ = 0, to = 2000, increment  = 1)
+            self.calculateSet = tk.Entry(self.frame, textvariable = self.calculateVar[str(ch)])
+            
             self.pressureGet = tk.Label(self.frame, text = '0')
             
             self.pressureSets.append(self.pressureSet)
@@ -195,6 +234,7 @@ class MainPanel(tk.Frame):
             self.periodSets.append(self.periodSet)
             self.pressureGets.append(self.pressureGet) 
             self.phaseSets.append(self.phaseSet)
+            self.calculateSets.append(self.calculateSet)
                         
             self.toggle.grid(row=ch+1, column = 0)
             self.options.grid(row=ch+1, column = 1)
@@ -202,33 +242,38 @@ class MainPanel(tk.Frame):
             self.amplitudeSet.grid(row=ch+1, column = 3)
             self.periodSet.grid(row=ch+1, column = 4)
             self.phaseSet.grid(row=ch+1, column = 5)
-            self.pressureGet.grid(row=ch+1, column = 6)
-            
-
-            
-        
+            self.calculateSet.grid(row=ch+1, column = 6)
+            self.pressureGet.grid(row=ch+1, column = 7)
+             
         self.frame.pack() 
+        self.read_entries_cb()
         #self.apply_set_cb() # this resets channel objects properly ?
         
     def toggle_cb(self):
         for key in self.stateVar:
-#            if self.stateVar[key].get() == 0:
-#                print('Channel ', key, ': OFF')
-#            elif self.stateVar[key].get() == 1:
-#                print('Channel ', key, ': ON')
             channels[int(key)].state = self.stateVar[key].get()
-
+    
+    def read_entries_cb(self):
+        for ch in range(len(channels)):
+            self.stateVar[str(ch)].set(channels[ch].state)
+            self.optionsVar[str(ch)].set(channels[ch].function) 
+            self.pressureVar[str(ch)].set(channels[ch].pressure)
+            self.amplitudeVar[str(ch)].set(channels[ch].amplitude)
+            self.periodVar[str(ch)].set(channels[ch].period)
+            self.phaseVar[str(ch)].set(channels[ch].phase)
+            self.calculateVar[str(ch)].set(channels[ch].calculate)
             
-    def apply_set_cb(self):
+    def apply_entries_cb(self):
         for ch in range(len(self.pressureGets)):
-            self.pressureGets[ch].configure(text = self.pressureSets[ch].get())
-            # write the settings to the channel objects
-            
+            self.pressureGets[ch].configure(text = self.pressureSets[ch].get()) # dummy, make seperate fct
+            # write the settings to the channel objects 
+            channels[ch].state = self.stateVar[str(ch)].get()
             channels[ch].function = self.optionsVar[str(ch)].get()
             channels[ch].pressure = float(self.pressureSets[ch].get())
             channels[ch].amplitude = float(self.amplitudeSets[ch].get())
             channels[ch].period = float(self.periodSets[ch].get())
             channels[ch].phase = float(self.phaseSets[ch].get())
+            channels[ch].calculate = self.calculateVar[str(ch)].get()
             # print(ch, channels[ch].pressure, channels[ch].amplitude, channels[ch].period)
             # ork.OB1_SetPressure(OB1, int(self.pressureSets[read].get()), ch, 2000)
             # self.pressureReads[ch].configure(text = str(ork.OB1_GetPressure(OB1, ch, 2000)))
@@ -236,7 +281,7 @@ class MainPanel(tk.Frame):
     def validate(self, action, index, value_if_allowed,
                        prior_value, text, validation_type, trigger_type, widget_name):
         # this function prevents entering anything but float numbers in Entry fields
-        if text in '0123456789.':
+        if text in '0123456789.+-':
             try:
                 float(value_if_allowed)
                 return True
@@ -305,8 +350,9 @@ class MainApp(tk.Frame):
         root.destroy()
         
 class Channel():
-    def __init__(self, index, state = 0, function = 'const.', pressure = 0, 
-                 amplitude = 0, period = 30, phase = 0, colour = 'red'):
+    def __init__(self, index, state = 1, function = 'const.', pressure = 0, 
+                 amplitude = 0, period = 30, phase = 0, calculate = '',
+                 colour = 'red'):
         self.index = index
         self.state = state
         self.function = function
@@ -315,6 +361,7 @@ class Channel():
         self.period = period
         self.phase = phase
         self.colour = colour
+        self.calculate = calculate
         
     def wave_pattern(self):
         pNow = 0
@@ -331,6 +378,9 @@ class Channel():
                 elif self.function == 'square':
                     tNow = time.time()-startTime
                     pNow = self.pressure + self.amplitude*spsg.square(tNow/self.period*2*np.pi-self.phase*np.pi/180.0, 0.5)
+                elif self.function == 'calculate':
+                    tNow = time.time()-startTime
+                    pNow = self.calculated_pattern()
                 else:
                     pass
             else:
@@ -342,12 +392,33 @@ class Channel():
         
     def calculated_pattern(self):
         pNow = 0
-        input_ = '1=1-2-3'
+        input_ = self.calculate
+        operators = re.findall('[-+*/]',input_)
+        indices = re.findall('\d+',input_)
         if mainToggle == 1:
             if self.state == 1:
+                pNow = self.pressure 
+                for k in range(len(operators)):
+                    if operators[k] == '+':
+                        pNow += channels[int(indices[k])].wave_pattern()
+                    elif operators[k] == '-':
+                        pNow -= channels[int(indices[k])].wave_pattern()
+                    elif operators[k] == '*':
+                        pNow *= channels[int(indices[k])].wave_pattern()
+                    elif operators[k] == '/':
+                        pNow /= channels[int(indices[k])].wave_pattern()
+                    else:
+                        pass
+            else:
                 pass
+        else:
+            pass
+                # does not account for Punkt vor Strich!!
+                # yields recursion errors!!
+                # thats probably slow
                 # need to work with channel objects in wave pattern?
                 # need attribute with deque?
+        return pNow
                 
 
 
@@ -355,6 +426,11 @@ global channels
 channels = []
 global mainToggle
 mainToggle = 0
+global pSet, tSet
+global interval_
+interval_ = 1000
+seconds = 60
+nd = seconds/interval_*1000 # number of datapoints that are displayed
 
 p = [0,0,0,0]
 t = [0,0,0,0]
@@ -365,11 +441,11 @@ for ch in range(4):
     # initialize channels
     channels.append(Channel(ch)) 
     
-    p[ch] = deque(np.empty(60) * np.nan)
-    t[ch] = deque(np.linspace(0, 60, 60))
+    p[ch] = deque(np.empty(nd) * np.nan)
+    t[ch] = deque(np.linspace(0, seconds, nd))
 
-    pSet[ch] = deque(np.zeros(60))
-    tSet[ch] = deque(np.linspace(0, 60, 60))
+    pSet[ch] = deque(np.zeros(nd))
+    tSet[ch] = deque(np.linspace(0, seconds, nd))
 
 f = Figure(figsize=(5, 5), dpi=100)
 a = f.add_subplot(111)
@@ -397,5 +473,5 @@ if __name__ == '__main__':
     root = tk.Tk() # create window
     
     app = MainApp(root).pack(side="top", fill="both", expand=True)
-    ani = animation.FuncAnimation(f, animate, interval=1000)
+    ani = animation.FuncAnimation(f, animate, interval=interval_)
     root.mainloop()
